@@ -1,0 +1,643 @@
+---
+title: "Decontamination of BT 2023 MiFish Amplicons"
+author: "Kimberly Ledger"
+output: html_document
+date: "2025-03-11"
+---
+
+** this just a prelim look.. for now working with the TAXA decontamination code ***
+
+
+libraries
+```{r}
+library(tidyverse)
+library(stringr)
+library(reshape2)
+rename <- dplyr::rename
+```
+
+load sample metadata
+```{r}
+metadata <- read.csv("/home/kimberly.ledger/goa-bt23-mb/data/GOA_BT2023_metadata.csv") %>%
+  filter(amplicon == "mifish")
+```
+
+check sequence table outputs
+```{r}
+asv_table <- readRDS("/home/kimberly.ledger/goa-bt23-mb/data/dadasnake_mifish/filtered.seqTab.RDS") %>%
+  select(!Row.names)
+
+#transpose 
+asv_table <- data.frame(t(asv_table))
+
+#set column names to be ASV# 
+colnames(asv_table) <- asv_table["ASV",]
+
+#remove row that has ASV#
+asv_table <- asv_table[!rownames(asv_table) %in% c('ASV'), ]
+
+#make sure reads are numbers
+# Convert all character columns to numeric
+for (col in names(asv_table)) {
+  asv_table[[col]] <- as.numeric(asv_table[[col]])
+}
+
+asv_table$sample_ID <- rownames(asv_table)  #make make sample ID a column 
+asv_table$sample_ID <- gsub("-", "_", asv_table$sample_ID) #illumina output changed "_" to "-"
+
+#reorder columns and change NTC names to remove extra "_"
+asv_table <- asv_table %>%
+  select(sample_ID, everything()) %>%
+  mutate(sample_ID = str_replace(sample_ID, "NTC_", "NTC"))
+```
+
+add column to the ASV table that labels the sample type
+```{r}
+asv_table_with_sample_type <- metadata %>%
+  dplyr::select(sample_ID, sample_type) %>%
+  left_join(asv_table, by = "sample_ID") %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+# make a variable for the first and last ASV column in the table
+asv_first <- which(colnames(asv_table_with_sample_type) == "ASV_163")  #this is the first asv column in this dataframe
+asv_last <- ncol(asv_table_with_sample_type)
+```
+
+pivot table longer 
+```{r}
+asv_table_long <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(asv_first:asv_last), names_to = "ASV", values_to = "reads") %>%
+  mutate(reads = as.numeric(reads)) %>%
+  mutate(reads = ifelse(is.na(reads), 0, reads))
+
+length(unique(asv_table_long$ASV))
+```
+
+there was no positive pcr control included in the mifish library prep so we are not able to estimate tagjumping using ways i have with other datasets... 
+
+## Step 1. Remove ASVs that don't get a taxonomic assignment 
+```{r}
+taxonomy <- read.csv("/home/kimberly.ledger/goa-bt23-mb/outputs/mifish_taxonomy_20250130_collapsed.csv") %>% 
+  select(!X) %>%
+  rename(ASV = qseqid)
+
+asv_table_filter1 <- asv_table_long %>%
+  filter(ASV %in% taxonomy$ASV)
+
+length(unique(taxonomy$ASV))
+```
+
+## Step 2. Remove ASVs that do not occur in field samples
+```{r}
+reads_per_type_ASV <- asv_table_filter1 %>%
+  group_by(ASV, sample_type) %>%
+  summarize(TotalReadsPerASV = sum(reads, na.rm = TRUE)) %>%
+  arrange(ASV)
+```
+
+what ASVs have no reads in samples, but reads in the controls? 
+```{r}
+not_in_samples <- reads_per_type_ASV %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerASV")) %>%
+    filter(sample < 1)
+not_in_samples
+```
+
+
+what ASVs do have reads in samples, but more reads in the controls? 
+```{r}
+more_in_pcr_blanks <- reads_per_type_ASV %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerASV")) %>%
+  #filter(sample > 1) %>%
+  filter(pcr_blank > sample)
+more_in_pcr_blanks
+
+more_in_extraction_blanks <- reads_per_type_ASV %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerASV")) %>%
+  #filter(sample > 1) %>%
+  filter(extraction_blank > sample)
+more_in_extraction_blanks
+
+more_in_fb_blanks <- reads_per_type_ASV %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerASV")) %>%
+  #filter(sample > 1) %>%
+  filter(field_blank > sample)
+more_in_fb_blanks
+```
+
+there are quite a few ASVs associated with field blanks - at least far more than i am used to having in a dataset. only two of these asvs also show up in field samples (ASV_017 - Oncorhynchus tshawytscha and ASV_077 - Sebastes entomelas)
+
+for now, during data exploration, i'm going to keep all of these asvs and reads 
+
+## Step 3. Remove low read depth samples based on ASV accumulation curve
+
+```{r}
+library(vegan)
+
+asv_table_wide <- asv_table_filter1 %>%
+  select(!sample_type) %>%
+  mutate(reads = as.integer(reads)) %>%
+  pivot_wider(names_from = ASV, values_from = reads)
+
+sample_IDs <- asv_table_wide$sample_ID
+
+asv_table_wide <- asv_table_wide %>%
+  ungroup() %>%
+  select(-sample_ID)
+
+## plots the figure
+rarecurve(asv_table_wide, step = 20, col = "blue", label = FALSE, 
+          main = "Sequencing Effort Curves",
+          xlab = "Sequencing Depth", ylab = "Number of ASVs Identified",
+          xlim = c(0,1000))
+```
+
+the avs vs seq depth curves plateau at a pretty low read depth (which is good)   
+
+summarize in a table how many pcr replicates meet certain read count thresholds 
+```{r}
+read_summary <- asv_table_filter1 %>%
+  group_by(sample_ID, sample_type) %>%
+  summarize(tot_reads = sum(reads)) %>%
+  arrange(desc(tot_reads)) %>%
+  group_by(sample_type) %>%
+  summarize(atleast0 = sum(tot_reads >= 0),
+            atleast100 = sum(tot_reads >= 100),
+            atleast200 = sum(tot_reads >= 200),
+            atleast500 = sum(tot_reads >= 500),
+            atleast1k = sum(tot_reads >= 1000))
+read_summary
+```
+
+so half (2/12) of extraction blank reps, ~18% of field blank reps (9/51), no pcr blank reps (0/21), and ~77% of field sample reps (158/204) have >500 reads
+
+it will likely be useful to have a read count threshold (probably ~500 reads per pcr replicate)
+
+### next... make some plots
+
+pcr_blanks 
+```{r}
+asv_table_filter1 %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "pcr_blank") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads in PCR blanks") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    #legend.position = "right",
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+asvs_pcrblank <- asv_table_filter1 %>%
+  filter(reads > 0) %>%
+  filter(sample_type == "pcr_blank") %>%
+  group_by(ASV) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+```
+
+very few reads in PCR blanks
+
+extraction_blanks 
+```{r}
+asv_table_filter1 %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "extraction_blank") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads in extraction blanks") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    #legend.position = "right",
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+asvs_extractionblank <- asv_table_filter1 %>%
+  filter(reads > 0) %>%
+  filter(sample_type == "extraction_blank") %>%
+  group_by(ASV) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+```
+
+quite a few reads in two of the extraction blank replicates - but dissimilarity looks high so perhaps a dissimilarity filter can address this 
+
+field_blanks 
+```{r}
+asv_table_filter1 %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "field_blank") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads in field blanks") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    #legend.position = "right",
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+asvs_fieldblank <- asv_table_filter1 %>%
+  filter(reads > 0) %>%
+  filter(sample_type == "field_blank") %>%
+  group_by(ASV) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+```
+
+at least two sites have substantial amplification in all three technical replicates of the field blanks... pcr replicate dissimilarity might be on par with normal field samples
+
+field samples 
+```{r}
+asv_table_filter1 %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "sample") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+  theme_bw() +
+  geom_hline(yintercept = 500, linetype = "dashed", color = "black", size = 1) +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads in field samples") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    #legend.position = "right",
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+too many samples to make much from this, but overall quite a bit of variation in read counts across replicates/samples 
+
+zoom in and plot a site or two and all it's technical and biological replicates 
+
+```{r}
+metadata_mini <- metadata %>%
+  select(sample_ID, extraction_ID, haul)
+```
+
+Station 229-159
+```{r}
+asv_table_filter1 %>%
+  left_join(metadata_mini, by = "sample_ID") %>%
+  filter(haul == 1) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    legend.title = element_blank()
+  )  
+```
+
+Station 254-173
+```{r}
+asv_table_filter1 %>%
+  left_join(metadata_mini, by = "sample_ID") %>%
+  filter(haul == 2) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    legend.title = element_blank()
+  )  
+```
+
+
+
+### Step X. Dissimilarity between technical and biological replicates 
+
+This step removes samples for which the dissimilarity between PCR replicates exceeds the normal distribution of dissimilarities observed in samples. The objective of this step is to remove any technical replicates that look like they do not belong.
+
+how many pcr replicates (with at least 500 reads) does each extraction replicate have? 
+```{r}
+asv_table_filter1 %>% summarise(num_unique = n_distinct(sample_ID))
+
+asv_table_filter1 %>%
+  group_by(sample_ID) %>%
+  summarise(total_reads = sum(reads)) %>%
+  filter(total_reads > 500) %>%             ### using a read count filter for this 
+  left_join(metadata_mini, by = "sample_ID") %>%
+  group_by(extraction_ID) %>%
+  summarise(nrep = n_distinct(sample_ID)) %>%
+  count(nrep, name = "num_samples")
+```
+note these tally doesn't include pcr reps/samples with all zeros. total sample number is 96 so surely some with all zeros. 
+
+now filter asv table to only keep biological samples with 2 or more technical replicates of >500 reads 
+```{r}
+extractionIDs_to_keep <- asv_table_filter1 %>%
+  group_by(sample_ID) %>%
+  summarise(total_reads = sum(reads)) %>%
+  filter(total_reads > 500) %>%             ### using a read count filter for this 
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  group_by(extraction_ID) %>%
+  summarise(nrep = n_distinct(sample_ID)) %>%
+  filter(nrep > 1)
+```
+
+filter to keep only the extractionIDs with 2 or 3 pcr replicates with >500 reads 
+```{r}
+asv_table_filter2 <- asv_table_filter1 %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  filter(extraction_ID %in% extractionIDs_to_keep$extraction_ID)
+```
+
+also remove any ASV with no reads 
+```{r}
+asvs_to_keep <- asv_table_filter2 %>%
+  group_by(ASV) %>%
+  summarise(total_reads = sum(reads)) %>%
+  filter(total_reads != 0)
+```
+
+filter
+```{r}
+asv_table_filter3 <- asv_table_filter2 %>%
+  filter(ASV %in% asvs_to_keep$ASV)
+```
+
+also need to remove the sample_ids with <500 reads (but other technical reps from same extraction_id did have enough reads)
+```{r}
+sample_IDs_to_remove <- asv_table_filter3 %>%
+  group_by(sample_ID) %>%
+  mutate(Tot = sum(reads)) %>%
+  filter(Tot < 500)
+```
+
+filter
+```{r}
+asv_table_filter4 <- asv_table_filter3 %>%
+  filter(!sample_ID %in% sample_IDs_to_remove$sample_ID)
+```
+
+calculate normalized read proportions 
+```{r}
+library(vegan)
+
+normalized <- asv_table_filter4 %>%
+    group_by(sample_ID) %>%
+    mutate(Tot = sum(reads),
+          Prop = reads/Tot) %>% ## this calculate the proportion of each technical replicate
+    select(sample_ID, ASV, Prop) %>%
+   pivot_wider(names_from = ASV, values_from = Prop)
+  
+ids <- normalized$sample_ID
+index_df <- normalized[,-c(1)]
+
+wis_index <- wisconsin(index_df)
+
+rowSums(wis_index)
+wis_index$sample_ID <- ids
+
+wis_index <- wis_index %>%
+  select(sample_ID, everything()) %>%
+  pivot_longer(cols = c(2:247), names_to = "ASV", values_to = "normalized_reads")
+```
+
+add a couple id columns to calculate dissimilarity 
+```{r}
+metadata_drop <- metadata %>%
+  select(sample_ID, drop, sample_type)
+
+wis_index_w_meta <- wis_index %>%
+  left_join(metadata_drop, by = "sample_ID") %>%
+  filter(sample_type == "sample") %>%
+  select(!sample_type) %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  select(!amplicon) %>%
+  unite(ID1, drop, extraction_ID, sep = "_", remove = FALSE) %>%
+  unite(ID2, ID1, replicate, sep = "-", remove = FALSE)
+```
+
+
+```{r}
+tibble_to_matrix <- function (tb) {
+  
+  tb %>%
+  #normalized %>%
+    group_by(ID2, ASV) %>% 
+    summarise(nReads = sum(normalized_reads)) %>% 
+    spread (key = "ASV", value = "nReads", fill = 0) %>%
+    ungroup() -> matrix_1
+    samples <- pull (matrix_1, ID2)
+    matrix_1[,-1] -> matrix_1
+    data.matrix(matrix_1) -> matrix_1
+    dimnames(matrix_1)[[1]] <- samples
+    vegdist(matrix_1) -> matrix_1
+}
+```
+
+
+```{r}
+all.distances.full <- tibble_to_matrix(wis_index_w_meta)
+
+# Do all samples have a name?
+summary(is.na(names(all.distances.full)))
+```
+
+make the pairwise distances a long table
+```{r}
+as_tibble(subset(melt(as.matrix(all.distances.full)))) -> all.distances.melted
+
+# Any major screw ups
+summary(is.na(all.distances.melted$value))
+
+# Now, create a three variables for all distances, they could be PCR replicates, BIOL replicates, or from the same site
+
+all.distances.melted %>%
+  separate (Var1, into = "Bottle1", sep = "\\-", remove = FALSE) %>%
+  separate (Bottle1, into = "Site1", remove = FALSE) %>%
+  separate (Var2, into ="Bottle2", sep = "\\-", remove = FALSE) %>%
+  separate (Bottle2, into = "Site2", remove = FALSE) %>%
+  mutate (Distance.type = case_when( Bottle1 == Bottle2 ~ "PCR.replicates",
+                                      Site1 == Site2 ~ "Biological.replicates",
+                                      TRUE ~ "Different Site"
+                                     )) %>%
+  dplyr::select(Sample1 = Var1, Sample2 = Var2 , value , Distance.type) %>%
+  filter (Sample1 != Sample2) -> all.distances.to.plot
+
+# Checking all went well
+sapply(all.distances.to.plot, function(x) summary(is.na(x)))
+
+```
+
+```{r}
+all.distances.to.plot$Distance.type <- all.distances.to.plot$Distance.type  %>% fct_relevel("PCR.replicates", "Biological.replicates")
+
+ggplot(all.distances.to.plot) +
+  geom_histogram(aes(x = value, fill = Distance.type), bins = 50) +
+  facet_wrap( ~ Distance.type, scales = "free_y") +
+    labs (x = "Pairwise dissimilarity", y = "Frequency" ,
+        Distance.type = "Distance") +
+    guides (fill = "none")
+
+ggplot(all.distances.to.plot) +
+  geom_histogram (aes (fill = Distance.type, x = value, after_stat(ndensity)), position = "dodge",  alpha = 0.9, bins = 50) +
+  facet_wrap( ~ Distance.type) +
+  labs (x = "Pairwise dissimilarity", y = "density" ,
+        Distance.type = "Distance") +
+    guides (fill = "none")
+```
+
+hmm, quite a bit of dissimilarity in species comps across all sample types, but the usual trend in less dissimilarity in pcr, then bio, then sites holds true. 
+
+next i will follow what was done here:  (https://github.com/ramongallego/eDNA.and.Ocean.Acidification.Gallego.et.al.2020/blob/master/Scripts/Denoising.all.runs.Rmd) and instead of choosing outliers based on the pairwise distances, we can do a similar thing using the distance to centroid. 
+
+now identify and discard outliers 
+```{r message=FALSE, warning=FALSE}
+wis_index_w_meta %>%
+  group_by(extraction_ID) %>% nest() -> nested.cleaning 
+
+nested.cleaning %>% 
+  mutate(matrix = map(data, tibble_to_matrix)) -> nested.cleaning
+
+nested.cleaning %>% mutate(ncomparisons = map(matrix, length)) -> nested.cleaning
+```
+
+```{r}
+dist_to_centroid <- function (x,y) {
+  
+  #biol <- rep(y, dim(x)[[1]])
+  biol <- rep(y, length(x))
+  
+  if (length(biol) == 1) {
+    output = rep(x[1]/2,2)
+    names(output) <- attr(x, "Labels")
+  }else{ 
+    
+  dispersion <- betadisper(x, group = biol)
+  output = dispersion$distances
+  }
+  output
+    }
+```
+
+```{r}
+nested.cleaning.temp <- nested.cleaning %>% 
+  mutate(distances = map2(matrix, extraction_ID, dist_to_centroid))
+
+all_distances <- nested.cleaning.temp %>%
+  unnest_longer(distances) %>%
+  dplyr::select(extraction_ID, distances_id, distances)
+
+hist(all_distances$distances)
+```
+
+calculate normal distribution of distances to centroid
+```{r}
+normparams <- MASS::fitdistr(all_distances$distances, "normal")$estimate                                      
+probs <- pnorm(all_distances$distances, normparams[1], normparams[2])
+outliers_centroid <- which(probs>0.95)
+
+discard_centroid <- all_distances$distances_id[outliers_centroid]
+discard_centroid
+
+discard_centroid_table <- as.data.frame(discard_centroid) %>%
+  separate(discard_centroid, into = c("drop", "X"), sep = "_", remove = F) %>%
+  separate(X, into = c("extraction_ID", "replicate"), sep = "-", remove = T)
+```
+
+these are few candidate replicates to remove from analysis - doesn't seem like many given the high pairwise dissimilarities 
+
+
+output the samples that pass this filter
+```{r}
+asv_table_filter5 <- asv_table_filter4 %>%
+  anti_join(discard_centroid_table, by = c("extraction_ID", "replicate"))
+```
+
+out of curiosity, plot a few that were removed with replicates from same drop 
+```{r}
+removed_dissim <- asv_table_filter4 %>% 
+  filter(extraction_ID %in% discard_centroid_table$extraction_ID) %>%
+  left_join(metadata_drop)
+```
+
+```{r}
+asv_table_filter4 %>%
+  left_join(metadata_drop) %>%
+  filter(drop == 4) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    #axis.text.x = element_blank(),
+    legend.position = "none",
+    legend.title = element_blank()
+  )  
+```
+
+so it doesn't really make sense why e03788-C was identified as an outlier.... 
+
+```{r}
+asv_table_filter4 %>%
+  left_join(metadata_drop) %>%
+  filter(drop == 14) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    #axis.text.x = element_blank(),
+    legend.position = "none",
+    legend.title = element_blank()
+  )  
+```
+
+same here... 
+
+maybe after assigning the asvs to taxa, this dissim approach might be more useful or clear.... 
+

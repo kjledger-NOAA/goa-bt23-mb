@@ -1,0 +1,140 @@
+---
+title: "bt catch comparison"
+output: html_document
+date: "2025-03-17"
+---
+
+# ASIDE !!!!! 
+
+taxonomic checks 
+uncertain about: Lycodes brevipes, did not look very far down taxon list - best may be to first compare to trawl data and then evaluate any taxa that are not in that dataset. 
+```{r}
+catch <- read.csv("/home/kimberly.ledger/goa-bt23-mb/data/CATCH_AND_HAUL_DATA_GOA_BT_2023_Chordata.csv")
+```
+
+get full taxon lineage for catch
+```{r}
+library(taxize)
+
+taxon_codes <- unique(catch$World.register.of.marine.species..WoRMS..taxonomic.serial.number)
+taxon_codes_clean <- discard(taxon_codes, is.na)  # Remove NA values
+taxonomy_list <- map(taxon_codes_clean, ~ classification(.x, db = "worms")[[1]])
+
+#taxonomy_list2 <- taxonomy_list[!is.na(taxonomy_list)] #Remove NA values (replace `NA` check with `!is.na()`)
+
+# Step 3: Convert list to a dataframe
+taxonomy_df <- bind_rows(taxonomy_list, .id = "id") %>%
+  mutate(taxon_id = taxon_codes_clean[as.numeric(id)]) %>%  # Map back to taxon_id
+  filter(rank %in% c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) %>%
+  select(taxon_id, rank, name) %>%
+  pivot_wider(names_from = rank, values_from = name) %>%
+  select(taxon_id, Kingdom, Phylum, Class, Order, Family, Genus, Species)  # Ensure column order
+
+# Step 4: Merge back with the original dataframe
+catch_df <- catch %>%
+  left_join(taxonomy_df, by = c("World.register.of.marine.species..WoRMS..taxonomic.serial.number" = "taxon_id") )
+```
+
+```{r}
+catch_df %>%
+  filter(is.na(Kingdom)) %>%
+  select(Taxon.common.name, Taxon.scientific.name, World.register.of.marine.species..WoRMS..taxonomic.serial.number) %>%
+  unique()
+```
+
+all these seem reasonable to exclude from catch 
+
+catch summary (entire 2023 GOA BT data export of Chordata)
+```{r}
+catch_summary <- catch_df %>%
+  filter(!is.na(World.register.of.marine.species..WoRMS..taxonomic.serial.number)) %>%
+  group_by(Taxon.common.name, Taxon.scientific.name, Class, Order, Family, Genus, Species) %>%
+  summarise(biomass_cpue = sum(Weight.CPUE..kg.km2.),
+            n_cpue = sum(Number.CPUE..no.km2.)) %>%
+  arrange(desc(biomass_cpue))
+catch_summary 
+```
+
+```{r}
+library(forcats)
+
+catch_summary %>%
+  filter(biomass_cpue > 10000) %>%
+  ggplot(aes(x = fct_reorder(Taxon.common.name, biomass_cpue, .desc = T), y = biomass_cpue)) +
+  geom_point(size = 3) +  # Adds points
+  scale_y_log10() +
+  labs(title = "Biomass - 2023 GOA Bottom Trawl Survey",
+       x = "Species",
+       y = "Biomass (kg)") +
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))  # Rotates x-axis labels for readability
+```
+
+
+
+
+cross check eDNA assignments with catch data to see if there's any obvious misIDs of ASVs 
+
+identify species in both eDNA and trawl
+```{r}
+both_lists <- intersect(taxon_table$taxon, catch_df$Taxon.scientific.name)
+both_lists
+```
+
+identify species in eDNA but not trawl
+```{r}
+eDNA_only <- setdiff(taxon_table$taxon, catch_df$Taxon.scientific.name)
+eDNA_only
+```
+
+NOTES:
+Atheresthes: Atheresthes evermanni and Atheresthes stomias in trawl (Atheresthes stomias - Arrowtooth flounder VERY abundant) - uncollapsed taxonomy has both species 
+Balaenoptera physalus: Fin whale - good thing that didn't end up in the net! 
+Bathyagonus: Bathyagonus nigripinnis, Bathyagonus pentacanthus, and Bathyagonus alascanus in trawl - uncollapsed taxonomy has B. alascanus and B. infraspinatus - check if reference data is available for other species - if so, edna detections see to be B. alascanus 
+Bathymaster: only Bathymaster signatus in trawl - uncollased tax has B. leurolepis and B. signatus
+Careproctus: Careproctus sp. in trawl - uncollapsed tax are Careproctus phasma and Careproctus scottae
+Cololabis saira: doesn't seem to be anywhere in the catch... but seems plausible to find  
+Cryptacanthodes aleutensis:  Cryptacanthodes giganteus in trawl - check reference data availability 
+Gadidae: pollock, pcod, saffron cod, and tomcod all in trawl - uncollapsed tax has pollock, pcod, and arctic cod. 
+Gadus: pollock and pcod in trawl 
+Icelinus borealis: this species not in trawl, but many other sculpins are 
+Lepidopsetta: Lepidopsetta bilineata and Lepidopsetta polyxystra in trawl - uncollapsed tax has both spp
+Megaptera novaeangliae: humpback whale
+Oncorhynchus: chum, chinook, pink, and coho in trawl - uncollapsed tax has chum, sockeye and pink 
+Oncorhynchus nerka: no sockeye in trawl... 
+Phocoena phocoena: Harbour porpoise
+Pleuronectidae: looking which species made up this assignment ... 
+Psychrolutes paradoxus: not in trawl  (only shows up in one eDNA pcr rep)
+Radulinus asprellus: not in trawl, but other sculpins are 
+Ronquilus jordani: not in trawl 
+Salvelinus: not in trawl - uncollapsed tax has S. alpinus and S. malma 
+Sebastes: LOTS of species (mostly POP) - let's see what rkfish mb says 
+Sebastes nigrocinctus: in range, surprising it's not in trawls this year?? also likely low confidence in mifish id - let's see what rkfish mb says 
+Sebastolobus: mostly Sebastolobus alascanus in trawl but also Sebastolobus altivelis and Sebastolobus macrochir - let's see what rkfish mb says 
+Stenobrachius leucopsarus: Stenobrachius sp. in trawl nets
+
+
+## check out uncollapsed taxonomic assigns to see how these fit 
+
+```{r}
+taxonomy_uncollapsed <- read.csv("/home/kimberly.ledger/goa-bt23-mb/outputs/mifish_taxonomy_20250130_uncollapsed.csv") %>% 
+  select(!X) %>%
+  rename(ASV = qseqid)
+```
+
+explore pleuronectidae - it's the only non species or genus assignment with a good number of reads 
+```{r}
+pleuro <- taxonomy_uncollapsed %>%
+  filter(taxon == "Pleuronectidae")
+```
+
+let me say: 
+Pleuronectidae 1 = Isopsetta isolepis, Parophrys vetulus, Psettichthys melanostictus (ASV_018, ASV_151, ASV_201) - all three in trawl catch 
+Pleuronectidae 2 = Glyptocephalus zachirus, Myzopsetta proboscidea (ASV_019, ASV_182) - lot of Glyptocephalus zachirus in catch - no Myzopsetta proboscidea
+Pleuronectidae 3 = Hippoglossoides elassodon, Hippoglossoides robustus, Limanda aspera (ASV_037, ASV_047, ASV_202) - Hippoglossoides elassodon and Limanda aspera in catch 
+
+```{r}
+taxonomy_uncollapsed %>%
+  filter(taxon == "Sebastolobus") %>%
+  select(species) %>%
+  unique()
+``` 

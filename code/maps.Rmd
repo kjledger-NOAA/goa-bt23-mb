@@ -1,0 +1,123 @@
+---
+title: "site_map"
+output: html_document
+date: "2025-03-14"
+---
+
+```{r}
+library(tidyverse)
+library(akgfmaps)
+```
+
+
+make a map of sampling locations
+```{r}
+#?get_base_layers
+
+goa <- get_base_layers(select.region = "goa", set.crs = 4326)  #3338 also works for GOA
+
+goa_plot <- ggplot() +
+  #geom_sf(data = goa$bathymetry) +
+  geom_sf(data = goa$survey.area) +
+  geom_sf(data = goa$akland, fill = "grey70") +
+  coord_sf(xlim = goa$plot.boundary$x,
+           ylim = goa$plot.boundary$y) +
+  theme_bw()
+#goa_plot
+```
+
+```{r}
+metadata <- read.csv("/home/kimberly.ledger/goa-bt23-mb/data/GOA_BT2023_metadata.csv")
+```
+
+change bottom type category for plot 
+```{r}
+metadata <- metadata %>%
+  mutate(Bottom_type = ifelse(Bottom_type == "T", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNK", "trawlable and untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKT", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKUT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKTUT", "trawlable and untrawlable", Bottom_type))
+```
+
+
+which of these trawls match with eDNA samples??? 
+```{r}
+sites_eDNA <- metadata %>%
+  select(station, stratum, haul, Average_depth, Bottom_type, start_dd_long, start_dd_lat) %>%
+  filter(!is.na(start_dd_long)) %>%
+  unique()
+
+sites_eDNA_sf <- st_as_sf(sites_eDNA, coords = c("start_dd_long", "start_dd_lat"), crs = 4326)
+```
+
+
+map by bottom type
+```{r}
+goa_edna_bottom <- ggplot() +
+  #geom_sf(data = goa$survey.area) +
+  geom_sf(data = goa$akland, fill = "grey70") +
+  #geom_sf(data = sites_eDNA_sf, aes(color = as.factor(haul)), size = 2) +
+  geom_sf(data = sites_eDNA_sf, aes(color = as.factor(Bottom_type)), size = 2) +
+  #geom_sf(data = sites_eDNA_sf, aes(color = Average_depth), size = 2) +
+  #scale_color_gradient(low = "lightblue", high = "darkblue") +
+  coord_sf(xlim = c(-155,-132.7),  #goa$plot.boundary$x,
+           ylim = c(54.5, 60.38)) +  #goa$plot.boundary$y) +
+  theme_bw()# + 
+  #theme(legend.title = element_blank()) + 
+goa_edna_bottom
+```
+
+map by depth
+```{r}
+goa_edna_depth <- ggplot() +
+  #geom_sf(data = goa$survey.area) +
+  geom_sf(data = goa$akland, fill = "grey70") +
+  #geom_sf(data = sites_eDNA_sf, aes(color = as.factor(haul)), size = 2) +
+  geom_sf(data = sites_eDNA_sf, aes(color = Average_depth), size = 2) +
+  scale_color_gradient(low = "lightblue", high = "darkblue") +
+  coord_sf(xlim = c(-155,-132.7),  #goa$plot.boundary$x,
+           ylim = c(54.5, 60.38)) +  #goa$plot.boundary$y) +
+  theme_bw()# + 
+  #theme(legend.title = element_blank()) + 
+goa_edna_depth
+```
+
+
+
+#############################################################
+
+plotting bottom trawl catch 
+
+```{r}
+catch <- read.csv("/home/kimberly.ledger/goa-bt23-mb/data/CATCH_AND_HAUL_DATA_GOA_BT_2023_Chordata.csv")
+```
+
+```{r}
+sites <- catch %>%
+  rename(latitude = Start.latitude..decimal.degrees.) %>%
+  rename(longitude = Start.longitude..decimal.degrees.) %>%
+  select(Haul.number, longitude, latitude) %>%
+  unique()
+
+# Step 1: Convert to sf object (default CRS is WGS84, EPSG:4326)
+sites_sf <- st_as_sf(sites, coords = c("longitude", "latitude"), crs = 4326)
+
+# Optional: Plot the points on a map
+library(ggplot2)
+ggplot() +
+  geom_sf(data = sites_sf) +
+  theme_minimal()
+```
+
+```{r}
+goa_plot_w_sites <- ggplot() +
+  geom_sf(data = goa$survey.area) +
+  geom_sf(data = goa$akland, fill = "grey70") +
+  geom_sf(data = sites_sf) +
+  coord_sf(xlim = goa$plot.boundary$x,
+           ylim = goa$plot.boundary$y) +
+  theme_bw()
+goa_plot_w_sites 
+```

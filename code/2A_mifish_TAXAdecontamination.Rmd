@@ -1,0 +1,1385 @@
+---
+title: "Decontamination of BT 2023 MiFish Amplicons - after assigning ASVs a taxa"
+author: "Kimberly Ledger"
+output: html_document
+date: "2025-03-11"
+---
+
+libraries
+```{r}
+library(tidyverse)
+library(stringr)
+library(reshape2)
+rename <- dplyr::rename
+```
+
+load sample metadata
+```{r}
+metadata <- read.csv("/home/kimberly.ledger/goa-bt23-mb/data/GOA_BT2023_metadata.csv") %>%
+  filter(amplicon == "mifish")
+```
+
+check sequence table outputs
+```{r}
+asv_table <- readRDS("/home/kimberly.ledger/goa-bt23-mb/data/dadasnake_mifish/filtered.seqTab.RDS") %>%
+  select(!Row.names)
+
+#transpose 
+asv_table <- data.frame(t(asv_table))
+
+#set column names to be ASV# 
+colnames(asv_table) <- asv_table["ASV",]
+
+#remove row that has ASV#
+asv_table <- asv_table[!rownames(asv_table) %in% c('ASV'), ]
+
+#make sure reads are numbers
+# Convert all character columns to numeric
+for (col in names(asv_table)) {
+  asv_table[[col]] <- as.numeric(asv_table[[col]])
+}
+
+asv_table$sample_ID <- rownames(asv_table)  #make make sample ID a column 
+asv_table$sample_ID <- gsub("-", "_", asv_table$sample_ID) #illumina output changed "_" to "-"
+
+#reorder columns and change NTC names to remove extra "_"
+asv_table <- asv_table %>%
+  select(sample_ID, everything()) %>%
+  mutate(sample_ID = str_replace(sample_ID, "NTC_", "NTC"))
+```
+
+add column to the ASV table that labels the sample type
+```{r}
+asv_table_with_sample_type <- metadata %>%
+  dplyr::select(sample_ID, sample_type) %>%
+  left_join(asv_table, by = "sample_ID") %>%
+  mutate(across(everything(), ~ replace_na(.x, 0)))
+
+# make a variable for the first and last ASV column in the table
+asv_first <- which(colnames(asv_table_with_sample_type) == "ASV_163")  #this is the first asv column in this dataframe
+asv_last <- ncol(asv_table_with_sample_type)
+```
+
+pivot table longer 
+```{r}
+asv_table_long <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(asv_first:asv_last), names_to = "ASV", values_to = "reads") %>%
+  mutate(reads = as.numeric(reads)) %>%
+  mutate(reads = ifelse(is.na(reads), 0, reads))
+
+length(unique(asv_table_long$ASV))
+```
+
+there was no positive pcr control included in the mifish library prep so we are not able to estimate tagjumping using ways i have with other datasets... 
+
+## Step 1. Remove ASVs that don't get a taxonomic assignment 
+```{r}
+taxonomy <- read.csv("/home/kimberly.ledger/goa-bt23-mb/outputs/mifish_taxonomy_20250130_collapsed.csv") %>% 
+  select(!X) %>%
+  rename(ASV = qseqid)
+
+asv_table_filter1 <- asv_table_long %>%
+  filter(ASV %in% taxonomy$ASV)
+
+length(unique(taxonomy$ASV))
+```
+
+## Redo some taxonomic assignments based on what we know from uncollapsed assignments and trawl catch 
+```{r}
+updated_tax <- taxonomy %>%
+  mutate(taxon = ifelse(ASV %in% c("ASV_018", "ASV_151", "ASV_201"), "Pleuronectidae 1", taxon), 
+         taxon = ifelse(ASV %in% c("ASV_019", "ASV_182"), "Pleuronectidae 2", taxon), 
+         taxon = ifelse(ASV %in% c("ASV_037", "ASV_047", "ASV_202"), "Pleuronectidae 3", taxon),
+         taxon = ifelse(taxon == "Bathyagonus", "Bathyagonus alascanus", taxon),
+         taxon = ifelse(taxon == "Gadidae", "Gadus", taxon),
+         taxon = ifelse(taxon == "Sebastes entomelas", "Sebastes", taxon),
+         taxon = ifelse(taxon == "Sebastes nigrocinctus", "Sebastes", taxon)) %>%
+  select(ASV, taxon)
+```
+
+## convert ASV table to taxon table 
+```{r}
+taxon_table <- asv_table_filter1 %>%
+  left_join(updated_tax) %>%
+  group_by(across(-c(ASV, reads))) %>%
+  summarize(tot_reads = sum(reads)) %>%
+  rename(reads = tot_reads)
+```
+
+### next... make some plots
+
+pcr_blanks 
+```{r}
+taxon_table %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "pcr_blank") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "taxon reads in PCR blanks") + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "bottom",
+    #legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+taxon_pcrblank <- taxon_table %>%
+  filter(reads > 0) %>%
+  filter(sample_type == "pcr_blank") %>%
+  group_by(taxon) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+taxon_pcrblank
+```
+
+very few reads in PCR blanks - 	Atheresthes (arrowtooth flounder) and Sebastes 
+
+extraction_blanks 
+```{r}
+taxon_table %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "extraction_blank") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "taxon reads in extraction blanks") + 
+ theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "bottom",
+    #legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+taxon_extractionblank <- taxon_table %>%
+  filter(reads > 0) %>%
+  filter(sample_type == "extraction_blank") %>%
+  group_by(taxon) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+taxon_extractionblank
+```
+
+quite a few reads in two of the extraction blank replicates - herring and some salmon 
+
+field_blanks 
+```{r}
+taxon_table %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "field_blank") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "taxon reads in field blanks") + 
+ theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "bottom",
+    #legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+zoom in on the field blanks with lots of reads 
+```{r}
+taxon_table %>%
+  filter(reads > 1000) %>%
+  filter(sample_type == "field_blank") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "taxon reads in field blanks") + 
+ theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    #axis.text.x = element_blank(),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "bottom",
+    #legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+two sites have substantial amplification in all three technical replicates of the field blanks...
+e03795 - mostly salmon
+e03836 - mostly Atheresthes (arrowtooth flounder) 
+
+```{r}
+taxon_fieldblank <- taxon_table %>%
+  filter(reads > 0) %>%
+  filter(sample_type == "field_blank") %>%
+  group_by(taxon) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+taxon_fieldblank 
+```
+
+
+field samples 
+```{r}
+taxon_table %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "sample") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  theme_bw() +
+  geom_hline(yintercept = 500, linetype = "dashed", color = "black", size = 1) +
+   labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "taxon reads in field samples") + 
+theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "bottom",
+    #legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+taxon_fieldsamples <- taxon_table %>%
+  filter(reads > 0) %>%
+  filter(sample_type == "sample") %>%
+  group_by(taxon) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+taxon_fieldsamples
+```
+
+```{r}
+rare_taxa <- taxon_table %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarize(Tot_taxon = sum(reads),
+            N_bio_reps = n_distinct(extraction_ID),
+            N_pcr_reps = n_distinct(sample_ID)) %>%
+  filter(N_pcr_reps < 8)
+```
+
+```{r}
+taxon_table_simple <- taxon_table %>%
+  mutate(taxon = ifelse(taxon %in% rare_taxa$taxon, "rare", taxon))
+```
+
+field samples 
+```{r}
+palette_22 <- c(
+  "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
+  "#8c564b", "#e377c2", "#7f7f7f", "#00736D", "#bcbd22","#17becf", 
+  "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", 
+  "#c49c94", "#f7b6d2", "#000000", "#c7c7c7", "#dbdb8d", "#9edae5")
+
+taxon_table_simple %>%
+  #filter(reads > 0) %>%
+  filter(sample_type == "sample") %>%
+  ggplot(aes(x=sample_ID, y=reads, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  theme_bw() +
+  geom_hline(yintercept = 500, linetype = "dashed", color = "black", size = 1) +
+   scale_fill_manual(values = palette_22) +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "taxon reads in field samples") + 
+theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    legend.text = element_text(size = 6),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "bottom",
+    #legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+filter taxon table to keep just pcr reps with >500 reads - but keep pcr reps w/ < 500 as zeros in dataset 
+```{r}
+#taxon_table_filter <- taxon_table_simple %>%
+taxon_table_filter <- taxon_table %>%              ## not using simplifed taxon assignments 
+  group_by(sample_ID) %>%
+  mutate(Tot = sum(reads)) %>%
+  filter(Tot >= 500)
+
+taxon_table_metadata <- metadata %>%
+  select(sample_ID, haul, Average_depth, stratum_depth_meters, Bottom_type, sample_type) %>%
+  left_join(taxon_table_filter) %>%
+  mutate(reads = ifelse(is.na(reads), 0, reads))
+```
+
+compare trawlable vs untrawlable habitat eDNA samples
+```{r}
+taxon_table_metadata <- taxon_table_metadata %>%
+   mutate(Bottom_type = ifelse(Bottom_type == "T", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNK", "trawlable and untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKT", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKUT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKTUT", "trawlable and untrawlable", Bottom_type))
+
+# # Create a 21-color palette (modify as needed)
+# palette_21_trawlable <- c(
+#   "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
+#   "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+#   "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", 
+#   "#c49c94", "#f7b6d2", "#000000", "#c7c7c7", "#dbdb8d", "#9edae5"
+# )
+# 
+# palette_21_untrawlable <- c(
+#   "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
+#   "#8c564b", "#e377c2", "#7f7f7f", "#1f77b4", "#bcbd22", "#17becf",
+#   "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", 
+#   "#c49c94", "#000000", "#c7c7c7", "#dbdb8d", "#9edae5")
+
+trawlable_fig <- taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(Bottom_type == "trawlable") %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  #filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(values = palette_22) +
+  facet_wrap(~haul, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)) +
+  ggtitle("MiFish - trawlable") + 
+  guides(fill = guide_legend(ncol = 1))
+
+untrawlable_fig <- taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(Bottom_type == "untrawlable") %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  #filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(values = palette_22) +
+  facet_wrap(~haul, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)) +
+  ggtitle("MiFish - untrawlable")  + 
+  guides(fill = guide_legend(ncol = 1))
+
+trawlable_fig
+untrawlable_fig
+```
+
+```{r}
+ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/mifish_trawlable.png", plot = trawlable_fig, width = 12, height = 6, dpi = 300)
+ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/mifish_untrawlable.png", plot = untrawlable_fig, width = 12, height = 6, dpi = 300)
+```
+
+summarize taxa by total reads and by presence in replicate samples 
+```{r}
+detection_df <- taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  mutate(reads_in_all = sum(reads),
+         all_bio_reps = n_distinct(extraction_ID),
+         all_pcr_reps = n_distinct(sample_ID)) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads),
+            prop_reads = total_reads/reads_in_all,
+            N_bio_reps = n_distinct(extraction_ID),
+            prop_bio_reps = N_bio_reps/all_bio_reps,
+            N_pcr_reps = n_distinct(sample_ID),
+            prop_pcr_reps = N_pcr_reps/all_pcr_reps) %>%
+  unique() %>%
+  arrange(desc(total_reads))
+detection_df
+```
+
+```{r}
+detection_df %>% 
+  filter(prop_bio_reps > 0.03) %>% 
+  ggplot(aes(x = fct_reorder(taxon, prop_bio_reps, .desc = T), y = prop_bio_reps)) + 
+  geom_point() + 
+  labs(title = "proportion of biological replicates with detection",
+       x = "taxa",
+       y = "proportion") +
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))  # Rotates x-axis labels for readability
+```
+
+
+summarize read counts by taxa - trawlable vs untrawlable
+```{r}
+trawl_det_df <- taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(Bottom_type == "trawlable") %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  mutate(reads_in_all = sum(reads),
+         all_bio_reps = n_distinct(extraction_ID),
+         all_pcr_reps = n_distinct(sample_ID)) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads),
+            prop_reads = total_reads/reads_in_all,
+            N_bio_reps = n_distinct(extraction_ID),
+            prop_bio_reps = N_bio_reps/all_bio_reps,
+            N_pcr_reps = n_distinct(sample_ID),
+            prop_pcr_reps = N_pcr_reps/all_pcr_reps) %>%
+  unique() %>%
+  arrange(desc(total_reads)) %>%
+  filter(prop_bio_reps > 0.10) 
+
+untrawl_det_df <- taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(Bottom_type == "untrawlable") %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+    mutate(reads_in_all = sum(reads),
+         all_bio_reps = n_distinct(extraction_ID),
+         all_pcr_reps = n_distinct(sample_ID)) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads),
+            prop_reads = total_reads/reads_in_all,
+            N_bio_reps = n_distinct(extraction_ID),
+            prop_bio_reps = N_bio_reps/all_bio_reps,
+            N_pcr_reps = n_distinct(sample_ID),
+            prop_pcr_reps = N_pcr_reps/all_pcr_reps) %>%
+  unique() %>%
+  arrange(desc(total_reads)) %>%
+  filter(prop_bio_reps > 0.10)
+
+combined_det_df <- trawl_det_df %>%
+  select(taxon, prop_bio_reps) %>%
+  rename(trawlable = prop_bio_reps) %>%
+  full_join(untrawl_det_df, by = "taxon") %>%
+  select(taxon, trawlable, prop_bio_reps) %>%
+  rename(untrawlable = prop_bio_reps) %>%
+  pivot_longer(cols = c(2,3), names_to = "bottom", values_to = "proportion") %>%
+  mutate(proportion = ifelse(is.na(proportion), 0, proportion))
+```
+
+```{r}
+ggplot(combined_det_df, aes(x = fct_reorder(taxon, proportion, .desc = T), y = proportion, fill = bottom)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Taxon", y = "Proportion", fill = "Bottom") +
+  theme_minimal() +
+  labs(title = "proportion of biological replicates with detection",
+       x = "taxa",
+       y = "proportion") +
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))  # Rotates x-axis labels for readability
+```
+
+
+
+
+compare samples by depth 
+```{r}
+str(taxon_table_metadata) 
+taxon_table_metadata$stratum_depth_meters <- as.factor(taxon_table_metadata$stratum_depth_meters)
+
+zeroto100_fig <- taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(stratum_depth_meters == "0-100") %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  #filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(values = palette_22) +
+  facet_wrap(~haul, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)) +
+  ggtitle("MiFish - 0-100m") + 
+  guides(fill = guide_legend(ncol = 1))
+
+onehundto200_fig <- taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(stratum_depth_meters == "100-200") %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  #filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(values = palette_22) +
+  facet_wrap(~haul, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)) +
+  ggtitle("MiFish - 100-200m")  + 
+  guides(fill = guide_legend(ncol = 1))
+
+zeroto100_fig
+onehundto200_fig
+```
+
+summarize read counts by taxa - depth stratum
+```{r}
+taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(stratum_depth_meters == "0-100") %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  mutate(reads_in_all = sum(reads),
+         all_bio_reps = n_distinct(extraction_ID),
+         all_pcr_reps = n_distinct(sample_ID)) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads),
+            prop_reads = total_reads/reads_in_all,
+            N_bio_reps = n_distinct(extraction_ID),
+            prop_bio_reps = N_bio_reps/all_bio_reps,
+            N_pcr_reps = n_distinct(sample_ID),
+            prop_pcr_reps = N_pcr_reps/all_pcr_reps) %>%
+  unique() %>%
+  arrange(desc(total_reads))
+
+taxon_table_metadata %>%
+  filter(sample_type == "sample")  %>%
+  filter(stratum_depth_meters == "100-200") %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+    mutate(reads_in_all = sum(reads),
+         all_bio_reps = n_distinct(extraction_ID),
+         all_pcr_reps = n_distinct(sample_ID)) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads),
+            prop_reads = total_reads/reads_in_all,
+            N_bio_reps = n_distinct(extraction_ID),
+            prop_bio_reps = N_bio_reps/all_bio_reps,
+            N_pcr_reps = n_distinct(sample_ID),
+            prop_pcr_reps = N_pcr_reps/all_pcr_reps) %>%
+  unique() %>%
+  arrange(desc(total_reads))
+```
+
+
+## multivariate community analysis 
+
+```{r}
+taxon_table_allspp_filter <- taxon_table %>%
+  filter(sample_type == "sample") %>%
+  group_by(sample_ID) %>%
+  mutate(Tot = sum(reads) )%>%
+  filter(Tot >= 500)
+```
+
+rows with all zeros have to be removed from the dataset, so i won't bother to join in the sample_IDs with no/few reads 
+
+calculate proportion of reads per taxa in each technical/PCR replicate 
+```{r}
+taxon_proportions <- taxon_table_allspp_filter %>%
+  group_by(sample_ID) %>%
+  mutate(prop = reads/Tot) %>%
+  separate(col = sample_ID, into = c("bottle", "replicate"), sep = "_")
+```
+
+calculate simple mean of taxa proportions for a given bottle 
+```{r}
+bottle_prop <- taxon_proportions %>%
+  group_by(bottle, taxon) %>%
+  summarize(simple.N = n(),
+            simple.mean = mean(prop),
+            simple.SD = sd(prop))
+```
+
+use this for bottle means - calculate eDNA index according to Kelly et al. 2019
+
+```{r}
+library(vegan)
+
+index_df <- bottle_prop %>%
+    select(-simple.N, -simple.SD) %>%
+   pivot_wider(names_from = taxon, values_from = simple.mean)
+  
+ids <- index_df$bottle
+index_df <- index_df[,-c(1)]
+
+wis_index <- wisconsin(index_df)
+
+rowSums(wis_index)
+wis_index$bottle <- ids
+
+index_df_wide <- wis_index %>%
+  select(bottle, everything())
+```
+
+
+use this for pcr replications - calculate eDNA index according to Kelly et al. 2019
+```{r}
+# library(vegan)
+# 
+# index_df <- taxon_table_allspp_filter %>%
+#     group_by(sample_ID) %>%
+#     mutate(Prop = reads / Tot) %>% ## this creates the proportion on each pcr replicate
+#     select(-reads, -Tot) %>%
+#    pivot_wider(names_from = taxon, values_from = Prop)
+#   
+# ids <- index_df$sample_ID
+# index_df <- index_df[,-c(1:2)]
+# 
+# wis_index <- wisconsin(index_df)
+# 
+# rowSums(wis_index)
+# wis_index$sample_ID <- ids
+# 
+# index_df_wide <- wis_index %>%
+#   select(sample_ID, everything())
+```
+
+get some metadata to run multivariate analyses 
+for now, i'm going to just work with field samples (i.e. ignore any reads in remaining field negatives, etc)
+```{r}
+meta <- metadata  %>%
+  filter(sample_type == "sample") %>%
+  select(sample_ID, extraction_ID, replicate, station, haul, start_dd_lat, start_dd_long, Average_depth, Bottom_type) %>%
+  mutate(Bottom_type = ifelse(Bottom_type == "T", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNK", "trawlable and untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKT", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKUT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKTUT", "trawlable and untrawlable", Bottom_type)) %>%
+  mutate(Bottom_type = as.factor(Bottom_type)) %>%
+  select(-c(sample_ID, replicate)) %>%
+  mutate(bottle = extraction_ID) %>%
+  unique()
+
+index_df_wide_w_meta <- index_df_wide %>%
+  left_join(meta, by = "bottle") 
+
+wide_meta <- index_df_wide_w_meta[,-c(2:59)]
+```
+
+run NMDS
+```{r}
+index_NMS_2<-metaMDS(index_df_wide[,-1], distance = "bray", k=2, try=200, autotransform = FALSE, maxit=1000)
+index_NMS_3<-metaMDS(index_df_wide[,-1], distance = "bray", k=3, try=200, autotransform = FALSE, maxit=1000)
+index_NMS_4<-metaMDS(index_df_wide[,-1], distance = "bray", k=4, try=200, autotransform = FALSE, maxit=1000)
+index_NMS_5<-metaMDS(index_df_wide[,-1], distance = "bray", k=5, try=200, autotransform = FALSE, maxit=1000)
+index_NMS_6<-metaMDS(index_df_wide[,-1], distance = "bray", k=6, try=200, autotransform = FALSE, maxit=1000)
+index_NMS_7<-metaMDS(index_df_wide[,-1], distance = "bray", k=7, try=200, autotransform = FALSE, maxit=1000)
+#index_NMS_8<-metaMDS(index_df_wide[,-1], distance = "bray", k=8, try=200, autotransform = FALSE, maxit=1000)
+#index_NMS_9<-metaMDS(index_df_wide[,-1], distance = "bray", k=9, try=200, autotransform = FALSE, maxit=1000)
+#index_NMS_10<-metaMDS(index_df_wide[,-1], distance = "bray", k=10, try=200, autotransform = FALSE, maxit=1000)
+
+stress_2d <- index_NMS_2$stress
+stress_3d <- index_NMS_3$stress
+stress_4d <- index_NMS_4$stress
+stress_5d <- index_NMS_5$stress
+stress_6d <- index_NMS_6$stress
+stress_7d <- index_NMS_7$stress
+#stress_8d <- index_NMS_8$stress
+#stress_9d <- index_NMS_9$stress
+#stress_10d <- index_NMS_10$stress
+
+k_values <- c(2, 3, 4, 5, 6, 7) #, 8, 9, 10)
+stress_values <- c(stress_2d, stress_3d, stress_4d, stress_5d, stress_6d, stress_7d) #, stress_8d, stress_9d, stress_10d)
+
+plot(k_values, stress_values, type = "b", xlab = "Number of Dimensions (k)", ylab = "Stress Value", main = "Choosing Optimal Dimensions for NMDS")
+```
+
+
+set the nmds dataset i want to plot 
+```{r}
+NMS_data <- index_NMS_4
+```
+
+```{r}
+#create vectors with the NMS attributes
+NMS_coordinates<-scores(NMS_data,display="sites")
+NMS_axes<-as.data.frame(NMS_coordinates)
+NMS_scores<-scores(NMS_data,display="species")
+```
+
+link back sample metadata
+```{r}
+for_ploting<-as.data.frame(cbind(NMS_coordinates,wide_meta))
+```
+
+```{r}
+#plot the stress
+stressplot(NMS_data)
+NMS_data$stress
+```
+
+plot 
+```{r}
+nmds.plot <- ggplot(for_ploting, aes(x=NMDS1, y=NMDS2))+ #sets up the plot
+  geom_point(aes(NMDS1, NMDS2, colour = start_dd_lat, shape = factor(Bottom_type)), size = 2)+ #adds site points to plot, shape determined by year, colour determined by location
+  coord_fixed()+
+  theme_classic()+ 
+  theme(panel.background = element_rect(fill = NA, colour = "black", size = 1, linetype = "solid"))+
+  labs(colour = "Depth", shape = "Bottom Type", title = "") + # add legend labels for Station
+  theme(legend.position = "right", 
+        legend.text = element_text(size = 12), 
+        legend.title = element_text(size = 12), 
+        axis.text = element_text(size = 10)) #+ # add legend at right of plot
+nmds.plot
+```
+
+
+lat or long gradient has stronger effect on community composition than bottom type or depth 
+
+
+run PERMANOVAs
+```{r}
+index_dist <- vegdist(index_df_wide[,-1], distance = "bray")
+
+index_lat <- adonis2(index_dist ~ wide_meta$start_dd_lat, permutations = 999)
+index_lat
+index_long <- adonis2(index_dist ~ wide_meta$start_dd_long, permutations = 999)
+index_long
+index_depth <- adonis2(index_dist ~ wide_meta$Average_depth, permutations = 999) 
+index_depth
+index_bottom <- adonis2(index_dist ~ wide_meta$Bottom_type, permutations = 999) 
+index_bottom
+index_haul <- adonis2(index_dist ~ wide_meta$haul, permutations = 999)
+index_haul
+```
+
+everything is significant - not sure i'm running this correctly... 
+
+let me try a distance-based redundancy analysis (dbRDA) for continuous variables - latitude and depth
+```{r}
+# Fit the dbRDA model - using capscale() - constrained analysis of principal coordinates
+
+rda_index <- capscale(index_df_wide[,-1] ~ wide_meta$start_dd_lat + wide_meta$Average_depth + as.factor(wide_meta$Bottom_type), distance = "bray")
+
+anova_terms <- anova(rda_index, by = "terms", permutations = 999)
+anova_terms 
+
+summary(rda_index)
+
+# Assuming capscale_model is already defined
+eigenvalues <- rda_index$CA$eig
+total_inertia <- sum(eigenvalues)
+
+# Calculate proportion explained for CAP1 and CAP2
+proportion_variance <- eigenvalues / total_inertia * 100
+
+# First use the regular plot option to get a feel for the data
+plot(rda_index, scaling = 2, choices = c(1,2))
+plot(rda_index, scaling = 2, choices = c(1,3))
+
+# Extract site and species scores
+site_scores <- as.data.frame(vegan::scores(rda_index, display = "sites", choices = 1:3))
+#site_scores <- as.data.frame(rda_index$CCA$u[, 1:3])
+site_scores$Sample <- rownames(site_scores)  # Add sample names
+
+species_scores <- as.data.frame(vegan::scores(rda_index, display = "species", choices = 1:3))
+#species_scores <- as.data.frame(rda_index$CCA$v[, 1:3])
+species_scores$Species <- rownames(species_scores)  # Add species names
+
+# Extract biplot arrows (for explanatory variables)
+biplot_arrows <- as.data.frame(vegan::scores(rda_index, display = "bp", choices = 1:3))
+#biplot_arrows <- as.data.frame(rda_index$CCA$biplot[, 1:3])
+biplot_arrows$variable <- rownames(biplot_arrows)
+
+biplot_arrows <- biplot_arrows %>%
+  mutate(variable = ifelse(variable == "wide_meta$start_dd_lat", "latitude", variable),
+         variable = ifelse(variable == "wide_meta$start_dd_long", "longitude", variable),
+         variable = ifelse(variable == "wide_meta$Average_depth", "depth", variable),
+         variable = ifelse(variable == "as.factor(wide_meta$Bottom_type)trawlable and untrawlable", "both", variable),
+         variable = ifelse(variable == "as.factor(wide_meta$Bottom_type)untrawlable", "untrawlable", variable))
+
+library(ggrepel)
+## Plot CAP1 vs CAP2 - color sites by bottom type
+plot_bottom <- ggplot() +
+  # Plot site scores
+  geom_point(data = site_scores, aes(x = CAP1, y = CAP2, color = wide_meta$Bottom_type), size = 3) +
+  #geom_text_repel(data = site_scores, aes(x = CAP1, y = CAP2, label = Sample), size = 4) +
+  #scale_color_viridis(option = "cividis",  direction = -1) +
+  
+  # Plot species scores
+  geom_point(data = species_scores, aes(x = CAP1, y = CAP2), color = "red", size = 2) +
+  geom_text_repel(data = species_scores, aes(x = CAP1, y = CAP2, label = Species), color = "red", size = 2) +
+  
+  # Plot arrows
+  geom_segment(data = biplot_arrows, aes(x = 0, y = 0, xend = CAP1, yend = CAP2), 
+               arrow = arrow(length = unit(0.3, "cm")), color = "black") + # Plot biplot arrows
+  geom_text(data = biplot_arrows, aes(x = CAP1 * 1.1, y = CAP2 * 1.1, label = variable), color = "black") + # Label arrows
+  
+  # Add labels and theme
+  labs(title = "CAP Plot", 
+       x = paste("CAP1 (", round(proportion_variance[1], 2), "% variance explained)", sep = ""), 
+       y = paste("CAP2 (", round(proportion_variance[2], 2), "% variance explained)", sep = ""),
+       color = "bottom type") +
+  theme_minimal() #+
+  #theme(legend.position = "none")
+plot_bottom 
+```
+
+
+```{r}
+library(viridis)
+## Plot CAP1 vs CAP2 - color sites by depth
+plot_latitude <- ggplot() +
+  # Plot site scores
+  geom_point(data = site_scores, aes(x = CAP1, y = CAP2, color = wide_meta$start_dd_lat), size = 3) +
+  #geom_text_repel(data = site_scores, aes(x = CAP1, y = CAP2, label = Sample), size = 4) +
+  scale_color_viridis(option = "cividis",  direction = -1) +
+  
+  # Plot species scores
+  geom_point(data = species_scores, aes(x = CAP1, y = CAP2), color = "red", size = 2) +
+  geom_text_repel(data = species_scores, aes(x = CAP1, y = CAP2, label = Species), color = "red", size = 2) +
+  
+  # Plot arrows
+  geom_segment(data = biplot_arrows, aes(x = 0, y = 0, xend = CAP1, yend = CAP2), 
+               arrow = arrow(length = unit(0.3, "cm")), color = "black") + # Plot biplot arrows
+  geom_text(data = biplot_arrows, aes(x = CAP1 * 1.1, y = CAP2 * 1.1, label = variable), color = "black") + # Label arrows
+  
+  # Add labels and theme
+  labs(title = "CAP Plot", 
+       x = paste("CAP1 (", round(proportion_variance[1], 2), "% variance explained)", sep = ""), 
+       y = paste("CAP2 (", round(proportion_variance[2], 2), "% variance explained)", sep = ""),
+       color = "latitude") +
+  theme_minimal() #+
+  #theme(legend.position = "none")
+plot_latitude
+```
+
+```{r}
+## Plot CAP1 vs CAP3 - color sites by depth
+plot_depth <- ggplot() +
+  # Plot site scores
+  geom_point(data = site_scores, aes(x = CAP1, y = CAP3, color = wide_meta$Average_depth), size = 3) +
+  #geom_text_repel(data = site_scores, aes(x = CAP1, y = CAP3, label = Sample), size = 4) +
+  scale_colour_viridis(option = "C", direction = -1) + 
+  
+  # Plot species scores
+  geom_point(data = species_scores, aes(x = CAP1, y = CAP3), color = "black", size = 2) +
+  geom_text_repel(data = species_scores, aes(x = CAP1, y = CAP3, label = Species), color = "black", size = 2) +
+  
+  # Plot arrows
+  geom_segment(data = biplot_arrows, aes(x = 0, y = 0, xend = CAP1, yend = CAP3), 
+               arrow = arrow(length = unit(0.3, "cm")), color = "black") + # Plot biplot arrows
+  geom_text(data = biplot_arrows, aes(x = CAP1 * 1.1, y = CAP3 * 1.1, label = variable), color = "black") + # Label arrows
+  
+  # Add labels and theme
+  labs(title = "CAP Plot", 
+       x = paste("CAP1 (", round(proportion_variance[1], 2), "% variance explained)", sep = ""), 
+       y = paste("CAP3 (", round(proportion_variance[3], 2), "% variance explained)", sep = ""), 
+       color = "depth") +
+  theme_minimal() #+
+  #theme(legend.position = "none")
+plot_depth
+```
+
+### an indicator species analysis 
+```{r}
+library(labdsv)
+
+df_clean <- index_df_wide[,-1] %>%
+  select(where(~ sum(.) != 0))
+
+# Perform indicator species analysis
+indicator_bottom <- indval(df_clean, wide_meta$Bottom_type, perm = 999)
+summary(indicator_bottom, p=0.1)
+indicator_bottom$pval
+```
+
+
+
+## Step 2. check out taxa that do not occur in field samples
+```{r}
+reads_per_type_taxa <- taxon_table %>%
+  group_by(taxon, sample_type) %>%
+  summarize(TotalReadsPerTaxa = sum(reads, na.rm = TRUE)) %>%
+  arrange(taxon)
+```
+
+what ASVs have no reads in samples, but reads in the controls? 
+```{r}
+not_in_samples <- reads_per_type_taxa %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerTaxa")) %>%
+    filter(sample < 1)
+not_in_samples
+```
+
+these might make sense to remove - very few Ammodytes hexapterus in trawl and some Eleginus gracilis
+
+what ASVs do have reads in samples, but more reads in the controls? 
+```{r}
+more_in_pcr_blanks <- reads_per_type_taxa %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerTaxa")) %>%
+  #filter(sample > 1) %>%
+  filter(pcr_blank > sample)
+more_in_pcr_blanks
+
+more_in_extraction_blanks <- reads_per_type_taxa %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerTaxa")) %>%
+  #filter(sample > 1) %>%
+  filter(extraction_blank > sample)
+more_in_extraction_blanks
+
+more_in_fb_blanks <- reads_per_type_taxa %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerTaxa")) %>%
+  #filter(sample > 1) %>%
+  filter(field_blank > sample)
+more_in_fb_blanks
+```
+
+field contamination of Oncorhynchus tshawytscha and Sebastes entomelas (extra handling of these onboard vessel????)
+
+
+## Step 3. Explore low read depth samples based on taxa accumulation curve
+
+```{r}
+library(vegan)
+
+taxon_table_wide <- taxon_table %>%
+  ungroup() %>%
+  select(sample_ID, taxon, reads) %>%
+  mutate(reads = as.integer(reads)) %>%
+  pivot_wider(names_from = taxon, values_from = reads)
+
+sample_IDs <- taxon_table_wide$sample_ID
+
+taxon_table_wide <- taxon_table_wide %>%
+  ungroup() %>%
+  select(-sample_ID)
+
+## plots the figure
+rarecurve(taxon_table_wide, step = 20, col = "blue", label = FALSE, 
+          main = "Sequencing Effort Curves",
+          xlab = "Sequencing Depth", ylab = "Number of Taxa Identified",
+          xlim = c(0,1000))
+```
+
+the taxa vs seq depth curves plateau at a pretty low read depth (which is good)   
+
+summarize in a table how many pcr replicates meet certain read count thresholds 
+```{r}
+read_summary <- taxon_table %>%
+  group_by(sample_ID, sample_type) %>%
+  summarize(tot_reads = sum(reads)) %>%
+  arrange(desc(tot_reads)) %>%
+  group_by(sample_type) %>%
+  summarize(atleast0 = sum(tot_reads >= 0),
+            atleast100 = sum(tot_reads >= 100),
+            atleast200 = sum(tot_reads >= 200),
+            atleast500 = sum(tot_reads >= 500),
+            atleast1k = sum(tot_reads >= 1000))
+read_summary
+```
+
+so half (2/12) of extraction blank reps, ~18% of field blank reps (9/51), no pcr blank reps (0/21), and ~77% of field sample reps (158/204) have >500 reads
+
+it will likely be useful to have a read count threshold (probably ~500 reads per pcr replicate)
+
+
+
+zoom in and plot a site or two and all it's technical and biological replicates 
+```{r}
+metadata_mini <- metadata %>%
+  select(sample_ID, extraction_ID, drop)
+```
+
+Station 229-159
+```{r}
+taxon_table %>%
+  left_join(metadata_mini, by = "sample_ID") %>%
+  filter(drop == 1) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)
+  )  
+```
+
+Station 254-173
+```{r}
+taxon_table %>%
+  left_join(metadata_mini, by = "sample_ID") %>%
+  filter(drop == 2) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)
+  )  
+```
+
+
+### Step X. Dissimilarity between technical and biological replicates 
+
+This step removes samples for which the dissimilarity between PCR replicates exceeds the normal distribution of dissimilarities observed in samples. The objective of this step is to remove any technical replicates that look like they do not belong.
+
+how many pcr replicates (with at least 500 reads) does each extraction replicate have? 
+```{r}
+taxon_table %>% summarise(num_unique = n_distinct(sample_ID))
+
+taxon_table %>%
+  group_by(sample_ID) %>%
+  summarise(total_reads = sum(reads)) %>%
+  filter(total_reads > 500) %>%             ### using a read count filter for this 
+  left_join(metadata_mini, by = "sample_ID") %>%
+  group_by(extraction_ID) %>%
+  summarise(nrep = n_distinct(sample_ID)) %>%
+  count(nrep, name = "num_samples")
+```
+note these tally doesn't include pcr reps/samples with all zeros. total sample number is 96 so surely some with all zeros. 
+
+now filter asv table to only keep biological samples with 2 or more technical replicates of >500 reads 
+```{r}
+extractionIDs_to_keep <- taxon_table %>%
+  group_by(sample_ID) %>%
+  summarise(total_reads = sum(reads)) %>%
+  filter(total_reads > 500) %>%             ### using a read count filter for this 
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  group_by(extraction_ID) %>%
+  summarise(nrep = n_distinct(sample_ID)) %>%
+  filter(nrep > 1)
+```
+
+filter to keep only the extractionIDs with 2 or 3 pcr replicates with >500 reads 
+```{r}
+taxon_table2 <- taxon_table %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  filter(extraction_ID %in% extractionIDs_to_keep$extraction_ID)
+```
+
+also remove any taxa with no reads 
+```{r}
+taxa_to_keep <- taxon_table2 %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads)) %>%
+  filter(total_reads != 0)
+```
+
+filter
+```{r}
+taxon_table3 <- taxon_table2 %>%
+  filter(taxon %in% taxa_to_keep$taxon)
+```
+
+also need to remove the sample_ids with <500 reads (but other technical reps from same extraction_id did have enough reads)
+```{r}
+sample_IDs_to_remove <- taxon_table3 %>%
+  group_by(sample_ID) %>%
+  mutate(Tot = sum(reads)) %>%
+  filter(Tot < 500)
+```
+
+filter
+```{r}
+taxon_table4 <- taxon_table3 %>%
+  filter(!sample_ID %in% sample_IDs_to_remove$sample_ID)
+```
+
+calculate normalized read proportions 
+```{r}
+library(vegan)
+
+normalized <- taxon_table4 %>%
+    group_by(sample_ID) %>%
+    mutate(Tot = sum(reads),
+          Prop = reads/Tot) %>% ## this calculate the proportion of each technical replicate
+    select(sample_ID, taxon, Prop) %>%
+   pivot_wider(names_from = taxon, values_from = Prop)
+  
+ids <- normalized$sample_ID
+index_df <- normalized[,-c(1)]
+
+wis_index <- wisconsin(index_df)
+
+rowSums(wis_index)
+wis_index$sample_ID <- ids
+
+wis_index <- wis_index %>%
+  select(sample_ID, everything()) %>%
+  pivot_longer(cols = c(2:59), names_to = "taxon", values_to = "normalized_reads")
+```
+
+add a couple id columns to calculate dissimilarity 
+```{r}
+metadata_drop <- metadata %>%
+  select(sample_ID, drop, sample_type)
+
+wis_index_w_meta <- wis_index %>%
+  left_join(metadata_drop, by = "sample_ID") %>%
+  filter(sample_type == "sample") %>%
+  select(!sample_type) %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  select(!amplicon) %>%
+  unite(ID1, drop, extraction_ID, sep = "_", remove = FALSE) %>%
+  unite(ID2, ID1, replicate, sep = "-", remove = FALSE)
+```
+
+
+```{r}
+tibble_to_matrix <- function (tb) {
+  
+  tb %>%
+  #normalized %>%
+    group_by(ID2, taxon) %>% 
+    summarise(nReads = sum(normalized_reads)) %>% 
+    spread (key = "taxon", value = "nReads", fill = 0) %>%
+    ungroup() -> matrix_1
+    samples <- pull (matrix_1, ID2)
+    matrix_1[,-1] -> matrix_1
+    data.matrix(matrix_1) -> matrix_1
+    dimnames(matrix_1)[[1]] <- samples
+    vegdist(matrix_1) -> matrix_1
+}
+```
+
+
+```{r}
+all.distances.full <- tibble_to_matrix(wis_index_w_meta)
+
+# Do all samples have a name?
+summary(is.na(names(all.distances.full)))
+```
+
+make the pairwise distances a long table
+```{r}
+as_tibble(subset(melt(as.matrix(all.distances.full)))) -> all.distances.melted
+
+# Any major screw ups
+summary(is.na(all.distances.melted$value))
+
+# Now, create a three variables for all distances, they could be PCR replicates, BIOL replicates, or from the same site
+
+all.distances.melted %>%
+  separate (Var1, into = "Bottle1", sep = "\\-", remove = FALSE) %>%
+  separate (Bottle1, into = "Site1", remove = FALSE) %>%
+  separate (Var2, into ="Bottle2", sep = "\\-", remove = FALSE) %>%
+  separate (Bottle2, into = "Site2", remove = FALSE) %>%
+  mutate (Distance.type = case_when( Bottle1 == Bottle2 ~ "PCR.replicates",
+                                      Site1 == Site2 ~ "Biological.replicates",
+                                      TRUE ~ "Different Site"
+                                     )) %>%
+  dplyr::select(Sample1 = Var1, Sample2 = Var2 , value , Distance.type) %>%
+  filter (Sample1 != Sample2) -> all.distances.to.plot
+
+# Checking all went well
+sapply(all.distances.to.plot, function(x) summary(is.na(x)))
+
+```
+
+```{r}
+all.distances.to.plot$Distance.type <- all.distances.to.plot$Distance.type  %>% fct_relevel("PCR.replicates", "Biological.replicates")
+
+ggplot(all.distances.to.plot) +
+  geom_histogram(aes(x = value, fill = Distance.type), bins = 50) +
+  facet_wrap( ~ Distance.type, scales = "free_y") +
+    labs (x = "Pairwise dissimilarity", y = "Frequency" ,
+        Distance.type = "Distance") +
+    guides (fill = "none")
+
+ggplot(all.distances.to.plot) +
+  geom_histogram (aes (fill = Distance.type, x = value, after_stat(ndensity)), position = "dodge",  alpha = 0.9, bins = 50) +
+  facet_wrap( ~ Distance.type) +
+  labs (x = "Pairwise dissimilarity", y = "density" ,
+        Distance.type = "Distance") +
+    guides (fill = "none")
+```
+
+hmm, quite a bit of dissimilarity in species comps across all sample types, but the usual trend in less dissimilarity in pcr, then bio, then sites holds true. 
+
+
+### NEXT pair down species in eDNA data to get rid of very rare things (spp in only a couple pcr replicates), then make some comparison plots, etc. 
+
+summarize reads per taxa - 59 taxa in field samples (originally), not zero reads of saffron cod
+```{r}
+eDNA_summary <- taxon_table %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarize(Tot_taxon = sum(reads),
+            N_bio_reps = n_distinct(extraction_ID),
+            N_pcr_reps = n_distinct(sample_ID)) %>%
+  arrange(desc(N_pcr_reps)) %>%
+  filter(N_pcr_reps >= 5)
+eDNA_summary
+```
+
+```{r}
+eDNA_summary %>%
+  ggplot(aes(x = fct_reorder(taxon, Tot_taxon, .desc = T), y = Tot_taxon)) +
+  geom_point(size = 3) +  # Adds points
+  scale_y_log10() +
+  labs(title = "MiFish reads - 2023 GOA Bottom Trawl Survey",
+       x = "Species",
+       y = "number of sequencing reads") +
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))  # Rotates x-axis labels for readability
+```
+
+```{r}
+eDNA_summary %>%
+  ggplot(aes(x = fct_reorder(taxon, N_bio_reps, .desc = T), y = N_bio_reps)) +
+  geom_point(size = 3) +  # Adds points
+  scale_y_log10() +
+  labs(title = "MiFish reads - 2023 GOA Bottom Trawl Survey",
+       x = "Species",
+       y = "presence in biological replicates") +
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))  # Rotates x-axis labels for readability
+```
+
+
+if i keep taxa IDs that are in 5 or more pcr reps, that cuts it down to 31 unique taxa - instead of removing the reads from rare taxa i will group all rare reads together 
+
+```{r}
+rare_taxa <- taxon_table %>%
+  separate(sample_ID, into = c("extraction_ID", "replicate", "amplicon"), sep = "_", remove = F) %>%
+  filter(reads > 0) %>%
+  group_by(taxon) %>%
+  summarize(Tot_taxon = sum(reads),
+            N_bio_reps = n_distinct(extraction_ID),
+            N_pcr_reps = n_distinct(sample_ID)) %>%
+  filter(N_pcr_reps < 8)
+```
+
+```{r}
+taxon_table_simple <- taxon_table %>%
+  mutate(taxon = ifelse(taxon %in% rare_taxa$taxon, "rare", taxon))
+```
+
+okay - for now i'm going to work with the original taxon table and just filter to remove any pcr replicates with <500 reads 
+```{r}
+taxon_table_filter <- taxon_table_simple %>%
+  group_by(sample_ID) %>%
+  mutate(Tot_replicate = sum(reads)) %>%
+  filter(Tot_replicate >= 500)
+```
+
+make some plots 
+Station 229-159
+```{r}
+taxon_table_filter %>%
+  left_join(metadata_mini, by = "sample_ID") %>%
+  filter(haul == 1) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)
+  )  
+```
+
+```{r}
+taxon_table_filter %>%
+  left_join(metadata_mini, by = "sample_ID") %>%
+  filter(drop == 2) %>%
+  group_by(sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  filter(prop > 0) %>%
+  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(sample_type~extraction_ID, scales = 'free', ncol = 3) +
+  theme_bw() + 
+  theme(
+    #axis.text.x = element_text(angle = 90, hjust = 0.95),
+    axis.text.x = element_blank(),
+    #legend.position = "none",
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)
+  )  
+```
+
+okay, probably on to something with removing the rare eDNA taxa to simplify comparison, but will need to think about it a lot more. 
+
+
+
+to do -maybe change #reps to %reps
+
+
+save a list of sample_IDs with rockfish reads 
+```{r}
+seb_reads <- taxon_table %>%
+  filter(taxon %in% c("Sebastes", "Sebastolobus")) %>%
+  group_by(sample_ID) %>%
+  summarise(total_seb = sum(reads))
+```
+
+```{r}
+write.csv(seb_reads, "/home/kimberly.ledger/goa-bt23-mb/outputs/sebastes_reads_in_mifish.csv")
+```
+
+
+

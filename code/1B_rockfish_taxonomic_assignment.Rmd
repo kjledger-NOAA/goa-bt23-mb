@@ -1,5 +1,5 @@
 ---
-title: "using custom rockfish database to assign ASVs to taxa"
+title: "Taxonomic Assignment of BT 2023 SebDLoop Rockfish Amplicons"
 author: "Kimberly Ledger"
 date: "2025-01-30"
 output: html_document
