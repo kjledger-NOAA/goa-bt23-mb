@@ -206,7 +206,7 @@ taxon_table %>%
   labs(
     y = "number of sequencing reads",
     x = "sample ID",
-    title = "taxon reads in field samples") + 
+    title = "taxon reads in positive") + 
 theme(
     #axis.text.x = element_text(angle = 90, hjust = 0.95),
     axis.text.x = element_blank(),
@@ -256,6 +256,32 @@ theme(
     legend.title = element_blank()
   )
 ```
+
+```{r}
+taxon_table %>%
+  filter(sample_type == "sample") %>%
+  group_by(sample_ID) %>%
+  summarize(total_reads = sum(reads)) %>%
+  mutate(reads_bin = case_when(
+    total_reads == 0 ~ "0",
+    total_reads > 0 & total_reads < 100 ~ "1-99",
+    total_reads >= 100 & total_reads < 500 ~ "100-499",
+    total_reads >= 500 & total_reads < 1000 ~ "500-999",
+    total_reads >= 1000 & total_reads < 2000 ~ "1000-1999",
+    total_reads >= 2000 ~ ">2000"
+  )) %>%
+  count(reads_bin)
+
+sample_read_count <- taxon_table %>%
+  group_by(sample_ID) %>%
+  summarize(total_reads = sum(reads)) %>%
+  separate(sample_ID, into = c("id", "replicate", "assay"), sep = "_") %>%
+  arrange(replicate)
+
+#write.csv(sample_read_count, "~/goa-bt23-mb/outputs/rkfish_read_count.csv")
+```
+
+
 
 ```{r}
 taxon_fieldsamples <- taxon_table %>%
@@ -437,12 +463,6 @@ taxon_table %>%
 
 
 
-
-
-
-
-
-
 let me see what rockfish species show up in the bottom trawls 
 
 ```{r}
@@ -553,7 +573,7 @@ rkfish_fig <- taxon_table %>%
   mutate(tot = sum(reads),
          prop = reads/tot) %>%
   filter(tot > 2000)  %>%
-  filter(sample_ID != "e03802_B_rkfish") %>%
+  filter(sample_ID != "e03802_B_rkfish") %>% 
   ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
   geom_bar(stat = "identity") + 
   scale_fill_manual(values = palette_21) +
@@ -574,15 +594,18 @@ theme(
   ) + 
   guides(fill = guide_legend(ncol = 1))
 rkfish_fig 
+
+rkfish_fig %>% select(sample_ID, tot) %>% unique() %>% arrange(desc(tot))
 ```
 ```{r}
-ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/rkfish.png", plot = rkfish_fig, width = 12, height = 6, dpi = 300)
+#ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/rkfish.png", plot = rkfish_fig, width = 12, height = 6, dpi = 300)
 ```
 
 
 ```{r}
-taxon_table %>%
+rk_heatmap <- taxon_table %>%
   left_join(metadata_haul) %>%
+  filter(Bottom_type != "trawlable and untrawlable") %>%
   filter(reads > 0) %>%
   filter(sample_type == "sample") %>%
   group_by(sample_ID) %>%
@@ -595,21 +618,23 @@ taxon_table %>%
   ungroup() %>%
   unique() %>%
   count(taxon, Bottom_type) %>%
-  ggplot(aes(x = Bottom_type, y = taxon, fill = n)) +
+  mutate(n_bin = ifelse(n > 0, 1, 0)) %>%
+  ggplot(aes(x = Bottom_type, y = taxon, fill = Bottom_type)) +
   geom_tile(color = "white") +
-  scale_fill_gradient(low = "blue", high = "red",
-                      name = "# of technical reps w/ detection") +
-  theme_minimal() +
-  #labs(#title = "taxon Presence Across Replicates",
-  #     x = "replicate", 
-  #     y = "") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
- 
+  scale_fill_manual(values = c("trawlable" = "#F8766D", "untrawlable" = "#00BFC4")) +
+  theme_classic() +
+  labs(x = "bottom type", 
+       y = "taxon") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+rk_heatmap 
 ```
 
+```{r}
+ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/rkfish_heatmap.png", plot = rk_heatmap, width = 6, height = 6, dpi = 300)
+```
 
-
-lack of northerns wierd? 
 
 ## Step 3. Explore low read depth samples based on taxa accumulation curve
 
@@ -653,95 +678,16 @@ read_summary
 ```
 
 
-it will likely be useful to have a read count threshold (probably between 200 - 500 reads per pcr replicate)
-
-
-
-### Step X. Dissimilarity between technical and biological replicates 
-
-*** not bothering to do this with rkfish primers because replicates clearly have very high dissimilarity... 
 
 ```{r}
 taxon_table_filter <- taxon_table %>%
   filter(!taxon %in% not_in_samples$taxon) %>%
   group_by(sample_ID) %>%
   mutate(Tot = sum(reads)) %>%
-  filter(Tot > 500)
+  filter(Tot > 2000)
 ```
 
-compare trawlable vs untrawlable habitat eDNA samples
-```{r}
-metadata_hab <- metadata %>%
-  select(sample_ID, haul, Average_depth, stratum_depth_meters, Bottom_type) %>%
-   mutate(Bottom_type = ifelse(Bottom_type == "T", "trawlable", Bottom_type),
-         Bottom_type = ifelse(Bottom_type == "UT", "untrawlable", Bottom_type),
-         Bottom_type = ifelse(Bottom_type == "UNK", "trawlable and untrawlable", Bottom_type),
-         Bottom_type = ifelse(Bottom_type == "UNKT", "trawlable", Bottom_type),
-         Bottom_type = ifelse(Bottom_type == "UNKUT", "untrawlable", Bottom_type),
-         Bottom_type = ifelse(Bottom_type == "UNKTUT", "trawlable and untrawlable", Bottom_type))
 
-# Create a 21-color palette (modify as needed)
-palette_21_trawlable <- c(
-  "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
-  "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-  "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", 
-  "#c49c94", "#f7b6d2", "#000000", "#c7c7c7", "#dbdb8d", "#9edae5"
-)
-
-palette_21_untrawlable <- c(
-  "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
-  "#8c564b", "#e377c2", "#7f7f7f", "#1f77b4", "#bcbd22", "#17becf",
-  "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", 
-  "#c49c94", "#f7b6d2", "#000000", "#c7c7c7", "#dbdb8d", "#9edae5"
-)
-
-trawlable_fig <- taxon_table_filter %>%
-  left_join(metadata_hab, by = "sample_ID") %>%
-  filter(sample_type == "sample")  %>%
-  filter(Bottom_type == "trawlable") %>%
-  group_by(sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(prop > 0) %>%
-  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
-  geom_bar(stat = "identity") + 
-  #scale_fill_manual(values = palette_21_trawlable) +
-  facet_wrap(~haul, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    #axis.text.x = element_text(angle = 90, hjust = 0.95),
-    axis.text.x = element_blank(),
-    #legend.position = "none",
-    legend.position = "right",
-    legend.title = element_blank(),
-    legend.text = element_text(size = 8)
-  )  
-
-untrawlable_fig <- taxon_table_filter %>%
-  left_join(metadata_hab, by = "sample_ID") %>%
-  filter(sample_type == "sample")  %>%
-  filter(Bottom_type == "untrawlable") %>%
-  group_by(sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(prop > 0) %>%
-  ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
-  geom_bar(stat = "identity") + 
-  #scale_fill_manual(values = palette_21_untrawlable) +
-  facet_wrap(~haul, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    #axis.text.x = element_text(angle = 90, hjust = 0.95),
-    axis.text.x = element_blank(),
-    #legend.position = "none",
-    legend.position = "right",
-    legend.title = element_blank(),
-    legend.text = element_text(size = 8)
-  )  
-
-trawlable_fig
-untrawlable_fig
-```
 
 summarize read counts by taxa - trawlable vs untrawlable
 ```{r}
@@ -769,5 +715,156 @@ taxon_table_filter %>%
             N_pcr_reps = n_distinct(sample_ID)) %>%
   arrange(desc(N_bio_reps))
 ```
+
+
+#### multivariate plots ##### 
+
+using PCR replicates as individual samples - calculate eDNA index according to Kelly et al. 2019
+
+```{r}
+library(vegan)
+
+wide_df <- taxon_table_filter %>%
+  mutate(prop = reads/Tot) %>%
+  filter(prop > 0.1) %>%
+  #filter(reads > 0) %>%
+  select(sample_ID, reads, taxon) %>%
+  pivot_wider(names_from = taxon, values_from = reads, values_fill = 0)
+  
+ids <- wide_df$sample_ID
+wide_df <- wide_df[,-c(1)]
+
+wis_index <- wisconsin(wide_df)
+rowSums(wis_index)
+
+wis_index$sample_ID <- ids
+
+wis_index <- wis_index %>%
+  select(sample_ID, everything())
+
+## join the metadata 
+metadata_mini <- metadata %>%
+  select(sample_ID, haul, start_dd_lat, start_dd_long, depth, Bottom_type) %>%
+  mutate(Bottom_type = ifelse(Bottom_type == "T", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNK", "trawlable and untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKT", "trawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKUT", "untrawlable", Bottom_type),
+         Bottom_type = ifelse(Bottom_type == "UNKTUT", "trawlable and untrawlable", Bottom_type)) %>%
+  mutate(Bottom_type = as.factor(Bottom_type))
+
+
+wis_index_w_meta <- wis_index %>%
+  left_join(metadata_mini) %>%
+  filter(Bottom_type != "trawlable and untrawlable") %>%
+  select(!`Sebastes flavidus`)  ## only in trawable and untrawable
+```
+
+
+
+let me try a distance-based redundancy analysis (dbRDA) for continuous variables - latitude and depth
+```{r}
+wis_df <- wis_index_w_meta[,-c(1,18:22)]
+
+meta_df <- wis_index_w_meta[,c(1,18:22)]
+
+
+# Fit the dbRDA model - using capscale() - constrained analysis of principal coordinates
+
+#rda_index <- capscale(wis_df ~ + meta_df$start_dd_long + meta_df$depth + as.factor(meta_df$Bottom_type), distance = "jaccard")
+rda_index <- capscale(wis_df ~ meta_df$start_dd_long + as.factor(meta_df$Bottom_type), distance = "jaccard")
+#rda_index <- capscale(wis_df ~ meta_df$start_dd_long + Condition(as.factor(meta_df$Bottom_type)), distance = "jaccard")
+#rda_index <- capscale(wis_df ~ meta_df$start_dd_long, distance = "jaccard")
+
+anova_terms <- anova(rda_index, by = "terms", permutations = 999)
+anova_terms 
+
+summary(rda_index)
+
+# Assuming capscale_model is already defined
+eigenvalues <- rda_index$CA$eig
+total_inertia <- sum(eigenvalues)
+
+# Calculate proportion explained for CAP1 and CAP2
+proportion_variance <- eigenvalues / total_inertia * 100
+
+# First use the regular plot option to get a feel for the data
+plot(rda_index, scaling = 2, choices = c(1,2))
+plot(rda_index, scaling = 2, choices = c(1,3))
+
+# Extract site and species scores
+site_scores <- as.data.frame(vegan::scores(rda_index, display = "sites", choices = 1:3))
+#site_scores <- as.data.frame(rda_index$CCA$u[, 1:3])
+site_scores$Sample <- rownames(site_scores)  # Add sample names
+
+species_scores <- as.data.frame(vegan::scores(rda_index, display = "species", choices = 1:3))
+#species_scores <- as.data.frame(rda_index$CCA$v[, 1:3])
+species_scores$Species <- rownames(species_scores)  # Add species names
+
+# Extract biplot arrows (for explanatory variables)
+biplot_arrows <- as.data.frame(vegan::scores(rda_index, display = "bp", choices = 1:3))
+#biplot_arrows <- as.data.frame(rda_index$CCA$biplot[, 1:3])
+biplot_arrows$variable <- rownames(biplot_arrows)
+
+biplot_arrows <- biplot_arrows %>%
+  mutate(variable = ifelse(variable == "meta_df$start_dd_lat", "latitude", variable),
+         variable = ifelse(variable == "meta_df$start_dd_long", "longitude", variable),
+         variable = ifelse(variable == "meta_df$depth", "depth", variable),
+         variable = ifelse(variable == "as.factor(meta_df$Bottom_type)trawlable and untrawlable", "both", variable),
+         variable = ifelse(variable == "as.factor(meta_df$Bottom_type)untrawlable", "untrawlable", variable)) %>%
+  filter(variable != "untrawlable")
+
+# use envfit to run signficance test for species 
+species_fit <- envfit(rda_index, wis_df, permutations = 999)
+
+# extract significant species
+# Get scores and p-values
+species_scores_all <- scores(species_fit, display = "vectors") %>% as.data.frame()
+species_scores_all$Species <- rownames(species_scores_all)
+species_scores_all$pval <- species_fit$vectors$pvals
+
+# Filter to significant species only (e.g., p < 0.05)
+species_scores_sig <- species_scores_all %>% 
+  filter(pval < 0.2)
+
+library(ggrepel)
+## Plot CAP1 vs CAP2 - color sites by bottom type
+plot_bottom <- ggplot() +
+  
+  # Plot site scores
+  #geom_point(data = site_scores, aes(x = CAP1, y = CAP2, color = meta_df$Bottom_type), size = 3) +
+  geom_jitter(data = site_scores, aes(x = CAP1, y = CAP2, color = meta_df$Bottom_type), 
+            width = 0.07, height = 0.07, size = 3) +
+  
+  # Plot ellipses
+  stat_ellipse(data = site_scores, aes(x = CAP1, y = CAP2, group = meta_df$Bottom_type, color = meta_df$Bottom_type), 
+               level = 0.75, type = "norm", linetype = "solid", size = 1) + 
+  
+  # Plot arrows
+  geom_segment(data = biplot_arrows, aes(x = 0, y = 0, xend = CAP1, yend = CAP2), 
+               arrow = arrow(length = unit(0.3, "cm")), color = "black") + # Plot biplot arrows
+  geom_text(data = biplot_arrows, aes(x = CAP1 * 1.1, y = CAP2 * 1.1, label = variable), color = "black") + # Label arrows
+  
+  # Plot species scores
+  geom_point(data = species_scores_sig, aes(x = CAP1, y = CAP2), color = "black", size = 2) +
+  geom_text_repel(data = species_scores_sig, aes(x = CAP1, y = CAP2, label = Species), color = "black", size = 3) +
+  
+  # Add labels and theme
+  labs(x = paste("CAP1 (", round(proportion_variance[1], 2), "% variance explained)", sep = ""), 
+       y = paste("CAP2 (", round(proportion_variance[2], 2), "% variance explained)", sep = ""),
+       color = "bottom type") +
+  theme_minimal() #+
+  #theme(legend.position = "none")
+plot_bottom 
+```
+
+
+```{r}
+ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/rkfish_rda.png", plot = plot_bottom, width = 8, height = 6, dpi = 300)
+```
+
+
+## what species are associated with longitude? 
+
 
 

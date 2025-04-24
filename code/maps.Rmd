@@ -59,15 +59,21 @@ goa_edna_bottom <- ggplot() +
   #geom_sf(data = goa$survey.area) +
   geom_sf(data = goa$akland, fill = "grey70") +
   #geom_sf(data = sites_eDNA_sf, aes(color = as.factor(haul)), size = 2) +
-  geom_sf(data = sites_eDNA_sf, aes(color = as.factor(Bottom_type)), size = 2) +
+  geom_sf(data = sites_eDNA_sf, aes(color = as.factor(Bottom_type)), size = 2, alpha = 0.4) +
   #geom_sf(data = sites_eDNA_sf, aes(color = Average_depth), size = 2) +
-  #scale_color_gradient(low = "lightblue", high = "darkblue") +
+  scale_color_manual(values = c("#F8766D", "dark blue", "#00BFC4")) +
   coord_sf(xlim = c(-155,-132.7),  #goa$plot.boundary$x,
            ylim = c(54.5, 60.38)) +  #goa$plot.boundary$y) +
-  theme_bw()# + 
+  theme_bw() + 
+  labs(color = "bottom type")  # + 
   #theme(legend.title = element_blank()) + 
 goa_edna_bottom
 ```
+
+```{r}
+ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/map.png", goa_edna_bottom, dpi = 300, width = 6, height = 3)
+```
+
 
 map by depth
 ```{r}
