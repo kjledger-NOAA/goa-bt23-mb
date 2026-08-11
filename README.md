@@ -13,5 +13,11 @@ amplicon sequencing of (1) 12S MiFish and (2) dloop rockfish
 taxonomic assignment of the rockfish dloop sequences 
 blastn -query /home/kimberly.ledger/goa-bt23-mb/data/dadasnake_rkfish/filtered.seqs.fasta -db /home/kimberly.ledger/rockfish_mb/custom_db/rockfish_db_534_20250117 -out rkfish_bt23_blastn.txt -perc_identity 92 -qcov_hsp_perc 98 -num_threads 10 -outfmt '6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sscinames staxids'
 
+
+for the rockfish resequencing: 
+blastn -query /home/kimberly.ledger/goa-bt23-mb/data/20250423_dadasnake_rkfish/filtered.seqs.fasta -db /home/kimberly.ledger/rockfish_mb/custom_db/rockfish_db_534_20250117 -out rkfish_20250423_blastn.txt -perc_identity 92 -qcov_hsp_perc 98 -num_threads 10 -outfmt '6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sscinames staxids'
+
 then 2_rockfish_taxonomic_assignment.Rmd
 
+
+## note - the reruns of the rockfish libraries are identical to the first time around... S
