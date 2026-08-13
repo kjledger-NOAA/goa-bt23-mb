@@ -590,7 +590,7 @@ theme(
   guides(fill = guide_legend(ncol = 1))
 rkfish_fig 
 
-rkfish_fig %>% select(sample_ID, tot) %>% unique() %>% arrange(desc(tot))
+rkfish_fig %>% dplyr::select(sample_ID, tot) %>% unique() %>% arrange(desc(tot))
 ```
 ```{r}
 ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/rkfish_20250423.png", plot = rkfish_fig, width = 12, height = 6, dpi = 300)
@@ -614,20 +614,27 @@ rk_heatmap <- taxon_table %>%
   unique() %>%
   count(taxon, Bottom_type) %>%
   mutate(n_bin = ifelse(n > 0, 1, 0)) %>%
-  ggplot(aes(x = Bottom_type, y = taxon, fill = Bottom_type)) +
+  ggplot(aes(x = Bottom_type, y = taxon, fill = n)) +
   geom_tile(color = "white") +
-  scale_fill_manual(values = c("trawlable" = "#F8766D", "untrawlable" = "#00BFC4")) +
+  scale_fill_continuous(trans = "log10") + 
+  #scale_fill_manual(values = c("trawlable" = "#F8766D", "untrawlable" = "#00BFC4")) +
   theme_classic() +
   labs(x = "bottom type", 
-       y = "taxon") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "none")
+       y = "taxon",
+       fill = "detections") +
+  theme(
+    legend.position = "right",
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 16),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)
+  )
 
 rk_heatmap 
 ```
 
 ```{r}
-#ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/rkfish_heatmap.png", plot = rk_heatmap, width = 6, height = 6, dpi = 300)
+ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/rkfish_heatmap_updated.png", plot = rk_heatmap, width = 7, height = 6, dpi = 300)
 ```
 
 
