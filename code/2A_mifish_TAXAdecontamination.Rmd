@@ -11,17 +11,19 @@ library(tidyverse)
 library(stringr)
 library(reshape2)
 rename <- dplyr::rename
+library(here)
+
 ```
 
 load sample metadata
 ```{r}
-metadata <- read.csv("/home/kimberly.ledger/goa-bt23-mb/data/GOA_BT2023_metadata.csv") %>%
+metadata <- read.csv(here("data/GOA_BT2023_metadata.csv")) %>%
   filter(amplicon == "mifish")
 ```
 
 check sequence table outputs
 ```{r}
-asv_table <- readRDS("/home/kimberly.ledger/goa-bt23-mb/data/dadasnake_mifish/filtered.seqTab.RDS") %>%
+asv_table <- readRDS(here("data/dadasnake_mifish/filtered.seqTab.RDS")) %>%
   select(!Row.names)
 
 #transpose 
@@ -74,7 +76,7 @@ there was no positive pcr control included in the mifish library prep so we are 
 
 ## Step 1. Remove ASVs that don't get a taxonomic assignment 
 ```{r}
-taxonomy <- read.csv("/home/kimberly.ledger/goa-bt23-mb/outputs/mifish_taxonomy_20250130_collapsed.csv") %>% 
+taxonomy <- read.csv(here("outputs/mifish_taxonomy_20250130_collapsed.csv")) %>% 
   select(!X) %>%
   rename(ASV = qseqid)
 
@@ -105,6 +107,7 @@ taxon_table <- asv_table_filter1 %>%
   summarize(tot_reads = sum(reads)) %>%
   rename(reads = tot_reads)
 ```
+
 
 ### next... make some plots
 
@@ -367,7 +370,7 @@ trawlable_fig <- taxon_table_metadata %>%
   #filter(prop > 0) %>%
   ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
   geom_bar(stat = "identity") + 
-  scale_fill_manual(values = palette_22) +
+  #scale_fill_manual(values = palette_22) +
   facet_wrap(~haul, scales = 'free', ncol = 3) +
   theme_bw() + 
   theme(
@@ -390,7 +393,7 @@ untrawlable_fig <- taxon_table_metadata %>%
   #filter(prop > 0) %>%
   ggplot(aes(x=sample_ID, y=prop, fill=taxon)) +
   geom_bar(stat = "identity") + 
-  scale_fill_manual(values = palette_22) +
+  #scale_fill_manual(values = palette_22) +
   facet_wrap(~haul, scales = 'free', ncol = 3) +
   theme_bw() + 
   theme(
@@ -412,6 +415,23 @@ untrawlable_fig
 #ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/mifish_trawlable.png", plot = trawlable_fig, width = 12, height = 6, dpi = 300)
 #ggsave("/home/kimberly.ledger/goa-bt23-mb/figures/mifish_untrawlable.png", plot = untrawlable_fig, width = 12, height = 6, dpi = 300)
 ```
+
+save 
+```{r}
+write.csv(taxon_table_metadata, here("outputs/mifish_taxon_table.csv"), row.names = F)
+```
+
+```{r}
+taxon_table_metadata_wide <- taxon_table_metadata %>%
+  pivot_wider(names_from = "taxon", values_from = "reads") %>%
+  arrange(haul)
+```
+
+```{r}
+write.csv(taxon_table_metadata_wide, here("outputs/mifish_taxon_table_wide.csv"), row.names = F)
+```
+
+
 
 summarize taxa by total reads and by presence in replicate samples 
 ```{r}
